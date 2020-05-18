@@ -1,0 +1,322 @@
+---
+title: "Ökonometria2_Beszámoló"
+author: "Fenyvesi András"
+date: '2020 05 17 '
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(ggplot2)
+library(AER)
+library(stargazer)
+library(plm)
+library(lmtest)
+library(multiwayvcov)
+library(scales)
+
+setwd('C:/Users/HP/Documents/00_RAJK/KURZUS_Ökonometria_II/Beszámoló/Code')
+
+# A játékosok piaci értéke, metaadatai és teljesítmény statisztikái 4 szezonra
+adat = read.csv('modeldf_final.csv', sep = ';', encoding = 'utf-8')
+
+# Az összes játékoseladás-vétel adatai, kiszűrve a kölcsönadásokat
+transferdata = read.csv('transferdata.csv', sep = ';', encodin = 'utf-8')
+
+
+6596/4
+
+```
+
+# Dummy és számított változók létrehozása
+
+```{r}
+# adat %>% summary()
+
+# A gólok, gólpasszok, pályáralépések és be/lecserélések arányszámai
+adat <- adat %>%  mutate(
+  playedpercent = (appearances / in_squad) * 100,
+  minutespergoal = minutes_played / goals,
+  minutesperassist = minutes_played / assists,
+  subbedperplayed = ((sub_on + sub_off) / appearances)*100,
+  core_player = ifelse(playedpercent >= 80,1,0),
+  sub_player = ifelse(playedpercent < 80 & playedpercent >=50,1,0),
+  res_player = ifelse(playedpercent < 50 ,1,0))
+
+
+adat$core_player %>% sum()
+adat$sub_player %>% sum()
+adat$res_player %>% sum()
+
+
+# A pályán betöltött szereplör dummy-jai
+for(level in unique(adat$position)){
+  adat[paste("position", level, sep = "_")] <- ifelse(adat$position == level, 1, 0)
+}
+
+# Az erősebb láb dummy-jai
+for(level in unique(adat$foot)){
+  adat[paste("foot", level, sep = "_")] <- ifelse(adat$foot == level, 1, 0)
+}
+
+# A szezon dummy-jai
+for(level in unique(adat$season)){
+  adat[paste("season", level, sep = "_")] <- ifelse(adat$season == level, 1, 0)
+}
+
+# Szezon dummy átnevezés a plm package miatt
+adat <- adat %>% mutate(
+  season_20 = ifelse(`season_19/20` == 1, 1, 0),
+  season_19 = ifelse(`season_18/19` == 1, 1, 0),
+  season_18 = ifelse(`season_17/18` == 1, 1, 0),
+  season_17 = ifelse(`season_16/17` == 1, 1, 0),
+)
+
+
+```
+
+# EDA
+
+## A piaci érték és az átigazolási díjak
+
+```{r, echo = FALSE, warning = FALSE}
+ggplot(data = transferdata, aes(parsedvalue, parsedprice)) +
+              geom_point(color = "blue", shape=19, size = 3, alpha = 0.5) +
+              geom_abline(color = "black", size = 1) +
+              xlab('Piaci érték az átigazolás pillanatában') +
+              ylab('Átigazolási díj') +
+              scale_x_continuous(labels = comma, breaks = c(25000000, 50000000, 75000000, 100000000, 125000000, 150000000, 175000000, 200000000)) + 
+              scale_y_continuous(labels = comma, breaks = c(25000000, 50000000, 75000000, 100000000, 125000000, 150000000, 175000000, 200000000)) +
+              geom_smooth(method='lm', se = FALSE, color = 'red', size = 1) +
+              ggtitle('Játékosok átigazolási díja és piaci ára az átigazolás pillanatában') + 
+              theme(axis.text=element_text(size=12),
+                    axis.title=element_text(size=14,face='bold'),
+                    plot.title=element_text(size=18, face = 'bold', hjust = 0.5))
+```
+Habár a piaci értékhez képest gyakrabban kelnek el magasabb áron a játékosok, mint alacsonyabb áron (ezt mutatja a fekete átlóvonalnál meredekebb piros regressziós egyenes is), a Transfermarkt piaci érték becslései a játékosok későbbi átigazolási díjait jól proxy-zzák.
+
+## A piaci érték változásának megfigyelése
+
+```{r, echo = FALSE, warning = FALSE}
+data1920 <- adat %>% filter(`season_19/20` == 1)
+data1819 <- adat %>% filter(`season_18/19` == 1)
+
+ggplot(data = adat, aes(x = season, y =log_marketvalue)) + 
+  geom_boxplot() +
+  stat_summary(fun.y=mean, geom="point", shape=23, size=4) +
+  xlab('Szezon') +
+  ylab('Piaci érték logaritmusa') + 
+  ggtitle('A piaci érték változása a megfigyelt időszakban') + 
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face='bold'),
+        plot.title=element_text(size=18, face = 'bold', hjust = 0.5))
+
+
+plotdata <- data.frame(data1920$marketvalue, data1819$marketvalue)
+
+ggplot(data = plotdata, aes(data1819.marketvalue, y=data1920.marketvalue)) +
+                  geom_point(color = "blue", shape=19, size = 3, alpha = 0.5) +
+                  geom_abline(color = "black", size = 1) +
+                  xlab('Market Value in 2019') +
+                  ylab('Market Value in 2020') +
+                  scale_x_continuous(labels = comma, breaks = c(25000000, 50000000, 75000000, 100000000, 125000000, 150000000, 175000000, 200000000)) + 
+                  scale_y_continuous(labels = comma, breaks = c(25000000, 50000000, 75000000, 100000000, 125000000, 150000000, 175000000, 200000000)) +
+                  ggtitle('A játékosok 2019-es és 2020-as piaci értéke') + 
+                  theme(axis.text=element_text(size=12, angle = 45),
+                        axis.title=element_text(size=14,face='bold'),
+                        plot.title=element_text(size=18, face = 'bold', hjust = 0.5))
+
+```
+ 
+<br> <br>
+A fenti diagramokon láthatjuk, hogy a piaci értékek egy növekvő trend után 2019-ről 2020-ra ismét csökkentek. A 2020-as évben a bajnokságok leállása után szinte minden játékos piaci értéke alacsonyabb lett, mint az azt megelőző évben.
+ 
+## Piaci érték és életkor
+ 
+```{r, echo = FALSE, warning = FALSE}
+data1920 <- adat %>% filter(`season_19/20` == 1)
+data1819 <- adat %>% filter(`season_18/19` == 1)
+
+
+ggplot() +
+  geom_point(data = data1819, aes( x = age, y = marketvalue), size=3, shape=19, alpha = 0.5, color = 'blue') +
+  geom_smooth(method='lm', se = FALSE) +
+  xlab('Életkor') +
+  ylab('Piaci érték') +
+  scale_y_continuous(labels = comma) +
+  ggtitle('A játékosok életkora és piaci értéke 2019-ben') +
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face='bold'),
+        plot.title=element_text(size=18, face = 'bold', hjust = 0.5))
+
+
+ggplot(data = data1819, aes( x = age, y = log_marketvalue)) +
+  geom_point(size=3, shape=19, alpha = 0.5, color = 'blue') +
+  geom_smooth(method='lm', formula = (y ~ x + I(x^2)), se = FALSE, color = 'black', size = 2) +
+  xlab('Életkor') +
+  ylab('Piaci érték') +
+  ggtitle('Életkor és a piaci érték logaritmusának összefüggése 2019-ben') +
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face='bold'),
+        plot.title=element_text(size=18, face = 'bold', hjust = 0.5))
+```
+ 
+ <br> <br>
+ 
+ A fenti diagramokon láthatjuk, hogy a játékosok piaci értéke a 20-as éveik során növekszik, majd a 20-as évek végén, 30-as évek elejétől kezdve csökken.
+ 
+ 
+ 
+## Életkori csoportokban bekövetkezett változások
+
+```{r, echo = FALSE, warning = FALSE}
+changes <- adat %>% select('season', 'age', 'marketvalue', 'prev_marketvalue', 'season_19/20', 'season_18/19') %>%
+  filter( `season_19/20` == 1 | `season_18/19` == 1 ) %>%
+  mutate( change = marketvalue - prev_marketvalue) %>% 
+  group_by(season, age) %>% summarize_all(funs(mean))
+
+
+ggplot(data = changes, aes(x = age, y = change, color = season)) +
+  geom_point(size=3, shape=19, alpha = 1) + 
+  xlab('Életkor') +
+  ylab('Átlagos változás a piaci értékben') + 
+  scale_y_continuous(labels = comma) +
+  ggtitle('A különböző korcsoportok átlagos piaci értékének változása előző évhez képest') + 
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face='bold'),
+        plot.title=element_text(size=18, face = 'bold', hjust = 0.5))
+```
+
+## Pályára lépések és piaci érték
+
+ 
+```{r, echo = FALSE, warning = FALSE}
+ggplot(data = adat, aes( x = playedpercent, y = log_marketvalue)) +
+  geom_point(size=3, shape=19, alpha = 0.5, color = 'blue') +
+  geom_smooth(method='lm', formula = y ~ x + I(x^2), se = FALSE, color = 'black', size = 2) +
+  xlab('Pályára lépések aránya a keretbe nevezések közül') +
+  ylab('Piaci érték logaritmusa') +
+  ggtitle('A játékosok pályáralépés-aránya és piaci értékük logaritmusa közötti összefüggés') + 
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face='bold'),
+        plot.title=element_text(size=18, face = 'bold', hjust = 0.5))
+```
+
+
+# OLS modellek
+
+```{r}
+# Modell az alapvető játékos metaadatokra
+lm1 <- adat %>% lm(log_marketvalue ~ log_prev_marketvalue + age + I(age^2) + height_cm + foot_both + foot_right + position_Defender + position_Midfielder,                     data = .)
+
+lm1 %>% summary()
+
+
+# Modell a teljesítmény vizsgálatával
+lm2 <- adat %>% lm(log_marketvalue ~
+                     log_prev_marketvalue +
+                     age + I(age^2) + height_cm + foot_both + foot_right + position_Defender + position_Midfielder +
+                     appearances + goals + assists + pointspermatch + yellow + secondyellow + red + core_player + subbedperplayed, 
+                   data = .)
+
+lm2 %>% summary()
+
+# Modell interakciós tagokkal a pozíciókra
+lm3 <- adat %>% lm(log_marketvalue ~
+                     log_prev_marketvalue +
+                     age + I(age^2) + height_cm + foot_both + foot_right + position_Defender + position_Midfielder +
+                     appearances + goals + assists + pointspermatch + yellow + secondyellow + red + core_player + subbedperplayed +
+                     position_Forward * goals + position_Midfielder * assists, 
+                   data = .)
+
+lm3 %>% summary()
+
+
+# Modell, amiben a season_19/20 is megjelenik
+lm4 <- adat %>% lm(log_marketvalue ~
+                     log_prev_marketvalue +
+                     age + I(age^2) + height_cm + foot_both + foot_right + position_Defender + position_Midfielder +
+                     appearances + goals + assists + pointspermatch + yellow + secondyellow + red + core_player + subbedperplayed +
+                     position_Forward * goals + position_Midfielder * assists +
+                     `season_19/20`, 
+                   data = .)
+
+lm4 %>% summary()
+
+# Szűkített modell
+lm5 <- adat %>% lm(log_marketvalue ~ log_prev_marketvalue + age + I(age^2) + playedpercent + I(playedpercent^2) + height_cm + position_Defender +
+                     position_Midfielder + appearances + goals + assists + pointspermatch +
+                    `season_19/20`, 
+                   data = .)
+
+lm5 %>% summary()
+
+stargazer(lm1, lm2, lm3, lm4, type = "html")
+
+
+```
+
+# Pooled OLS modell
+
+```{r}
+
+
+pooled_ols_1 <- adat %>% plm(formula = log_marketvalue ~ log_prev_marketvalue + age + I(age^2) + playedpercent + I(playedpercent^2) +
+                                       height_cm + position_Defender + position_Midfielder + appearances + goals + assists + pointspermatch +
+                                       season_20,
+                             data = .,
+                             model="pooling",
+                             index=c('name', 'season'))
+
+pooled_ols_1 %>% summary()
+
+# Korrigálja a sztenderd hibákat a klaszterek szerint
+
+stargazer(coeftest(pooled_ols_1, vcov=vcovHC(pooled_ols_1, type="HC1", cluster='group')), type = 'html')
+
+coeftest(pooled_ols_1, vcov=vcovHC(pooled_ols_1, type="HC1", cluster='time'))  
+
+coeftest(pooled_ols_1, vcov=vcovDC(pooled_ols_1, type="HC1"))
+
+?vcovHC
+```
+
+# FD Modell
+
+```{r}
+fd_model1 <- adat %>% filter(season_19 == 1 | season_20 == 1) %>%
+                         plm(formula = log_marketvalue ~ log_prev_marketvalue + age + I(age^2) + playedpercent + I(playedpercent^2) +
+                                       height_cm + position_Defender +
+                                       position_Midfielder + position_Forward + appearances + goals + assists + pointspermatch + 
+                              season_19,
+                             data = .,
+                             model="fd",
+                             index=c('name', 'season'))
+
+fd_model1 %>% summary()
+
+
+```
+
+# FE Modell
+```{r}
+fe_model1 <- adat %>% plm(formula = log_marketvalue ~ log_prev_marketvalue + age + I(age^2) + playedpercent + I(playedpercent^2) +
+                                       height_cm + position_Defender +
+                                       position_Midfielder + position_Forward + appearances + goals + assists + pointspermatch +
+                                       season_20,
+                             data = .,
+                             model="within",
+                             index=c('name', 'season'))
+
+fe_model1 %>% summary()
+
+
+stargazer(fd_model1, fe_model1, type = 'html')
+
+```
+
+
+
